@@ -48,6 +48,9 @@ def main():
     (build / "Replicator-under-test.inc").write_text("\n".join(function(repl, name) for name in [
         "void Replicator::applyInventories(", "void Replicator::applyXferAcks(",
         "void Replicator::releaseXferLatch("]))
+    (build / "World-under-test.inc").write_text("\n".join(function(repl, name) for name in [
+        "static u32 worldTrackHash(", "RootObject* Replicator::liveWorldProxy(",
+        "void Replicator::publishWorldItems(", "void Replicator::applyWorldItems("]))
     compiler = os.environ.get("CXX", "g++")
     exe = build / "inventory-regressions"
     flags = ["-std=c++03", "-O1", "-g", "-D__int64=long long"]
@@ -61,6 +64,11 @@ def main():
         exe = build / "snapshot-regressions"
         subprocess.run([compiler, *flags, "-I" + str(ROOT),
                         str(ROOT / "scripts/tests/portable/SnapshotRegression.cpp"),
+                        "-o", str(exe)], check=True)
+        subprocess.run([str(exe)], check=True)
+        exe = build / "world-regressions"
+        subprocess.run([compiler, *flags, "-I" + str(ROOT), "-I" + str(build),
+                        str(ROOT / "scripts/tests/portable/WorldRegression.cpp"),
                         "-o", str(exe)], check=True)
         subprocess.run([str(exe)], check=True)
 
