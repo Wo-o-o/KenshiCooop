@@ -403,6 +403,7 @@ public:
     SessionQ() {}
     void push_back(const T& v) { q_.push_back(v); }
     operator std::deque<T>&() { return q_; }
+    void clearQueue() { q_.clear(); }
 private:
     std::deque<T> q_;
     SessionQ(const SessionQ&);
@@ -848,6 +849,23 @@ public:
         // spawn) or a scenario may arm again.
         sawRemote_ = false;
         ++generation_;
+        LeaveCriticalSection(&cs_);
+    }
+
+    // A world reload keeps the connection's save/load handshake. A real
+    // disconnect must discard it: an old BEGIN/GO may otherwise restart a
+    // cancelled receiver or load a departed peer's save on the next tick.
+    // Presence edges remain available to their normal consumer.
+    void discardSaveLoadState() {
+        EnterCriticalSection(&cs_);
+        saveReq_.clearQueue();
+        saveBegin_.clearQueue();
+        saveFile_.clearQueue();
+        saveDone_.clearQueue();
+        saveAck_.clearQueue();
+        loadGo_.clearQueue();
+        loadReq_.clearQueue();
+        loadNack_.clearQueue();
         LeaveCriticalSection(&cs_);
     }
 

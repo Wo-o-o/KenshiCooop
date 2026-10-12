@@ -240,6 +240,8 @@ void warnIfNoPortraits(const std::string& name) {
 // clearing the maps - else a reconnect leaves orphaned duplicates or bakes them
 // into the next save. Falls back to a plain map reset if no world has ticked yet.
 void sessionResetForUi() {
+    coop::savexfer::abortReceive();
+    g_inbound.discardSaveLoadState();
     g_peerPresent = false;
     if (g_lastGw) g_repl.clearPeerReplicationState(g_lastGw);
     else          g_repl.resetSession();
@@ -337,6 +339,8 @@ void processNetEvents(GameWorld* gw) {
     // minted proxies and clear the peer maps, mirroring coopUiDisconnect(). Runs
     // once per leave batch (we support a single peer).
     if (!leaves.empty()) {
+        coop::savexfer::abortReceive();
+        g_inbound.discardSaveLoadState();
         g_repl.clearPeerReplicationState(gw);
         g_inbound.flushWorldState();
     }

@@ -184,6 +184,18 @@ void sendAbort(const char* why) {
     g_sendCrcs.clear();
 }
 
+void sendAbortAndNotify(NetLink& net, u32 localId, const char* why) {
+    const u32 id = g_sendXferId;
+    sendAbort(why);
+    // BEGIN always advertises at least one file. A zero-count DONE therefore
+    // fails verification on protocol-55 receivers and terminates their progress
+    // display without committing the partial folder. No new packet is required.
+    SaveDoneHeader done; memset(&done, 0, sizeof(done));
+    done.type = (u8)PKT_SAVE_DONE; done.ownerId = localId;
+    done.xferId = id; done.fileCount = 0;
+    net.queueSaveDone(done, 0, 0);
+}
+
 #endif // !KENSHICOOP_PROTOTEST (sender state)
 
 // ---- Receiver state (join, main thread only) -----------------------------------
@@ -467,7 +479,12 @@ bool tickSend(NetLink& net, u32 localId) {
                                        GENERIC_READ, FILE_SHARE_READ, 0,
                                        OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, 0);
             if (g_sendHandle == INVALID_HANDLE_VALUE) {
-                sendAbort("open failed (save changed mid-transfer?)");
+                const DWORD error = GetLastError();
+                char why[384]; _snprintf(why, sizeof(why) - 1,
+                    "open failed err=%lu file=%u path='%s' (save changed or locked?)",
+                    error, (unsigned)g_sendFileIdx, xf.rel.c_str());
+                why[sizeof(why) - 1] = '\0';
+                sendAbortAndNotify(net, localId, why);
                 return false;
             }
             g_sendOffset = 0;
@@ -478,9 +495,17 @@ bool tickSend(NetLink& net, u32 localId) {
         if (xf.size - g_sendOffset < (unsigned __int64)want)
             want = (DWORD)(xf.size - g_sendOffset);
         DWORD got = 0;
-        if (want > 0 && (!ReadFile(g_sendHandle, buf, want, &got, 0) || got != want)) {
-            sendAbort("read failed (save changed mid-transfer?)");
-            return false;
+        if (want > 0) {
+            const BOOL readOk = ReadFile(g_sendHandle, buf, want, &got, 0);
+            if (!readOk || got != want) {
+                const DWORD error = readOk ? ERROR_HANDLE_EOF : GetLastError();
+                char why[384]; _snprintf(why, sizeof(why) - 1,
+                    "read failed err=%lu file=%u offset=%I64u want=%lu got=%lu path='%s'",
+                    error, (unsigned)g_sendFileIdx, g_sendOffset, want, got, xf.rel.c_str());
+                why[sizeof(why) - 1] = '\0';
+                sendAbortAndNotify(net, localId, why);
+                return false;
+            }
         }
         g_sendCurCrc = fnv1aUpdate(g_sendCurCrc, buf, (unsigned int)got);
 
@@ -544,6 +569,16 @@ void noteAck(u32 xferId, int ok) { g_lastAckXferId = xferId; g_lastAckOk = ok; }
 u32  lastAckXferId() { return g_lastAckXferId; }
 int  lastAckOk()     { return g_lastAckOk; }
 
+void abortReceive() {
+    recvCloseFile();
+    if (!g_recvActive) return;
+    g_recvActive = false;
+    // Leave the partial staging folder for diagnosis; never touch the prior save.
+    g_lastCommitResult = 0;
+    ++g_commitSeq;
+    coop::logErrLine("[save] XFER-RECV-ABORT (connection/session ended; prior save preserved)");
+}
+
 #ifndef KENSHICOOP_PROTOTEST
 void abortAll() {
     if (g_watchArmed) {
@@ -551,6 +586,7 @@ void abortAll() {
         coop::logLine("[save] WATCH disarmed (superseded by coordinated load)");
     }
     if (g_sendActive) sendAbort("superseded by coordinated load");
+    abortReceive();
 }
 #endif
 

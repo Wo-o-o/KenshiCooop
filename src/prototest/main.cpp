@@ -1511,6 +1511,46 @@ static void testFlushWorldStateContract() {
     #undef SP_KEPT
 }
 
+static void testSaveLoadDisconnect() {
+    std::printf("== save/load disconnect queue lifecycle ==\n");
+    Inbound in;
+    SaveReqPacket req; std::memset(&req, 0, sizeof(req));
+    SaveBeginPacket begin; std::memset(&begin, 0, sizeof(begin));
+    SaveFileHeader file; std::memset(&file, 0, sizeof(file));
+    SaveDoneHeader done; std::memset(&done, 0, sizeof(done));
+    SaveAckPacket ack; std::memset(&ack, 0, sizeof(ack));
+    LoadGoPacket go; std::memset(&go, 0, sizeof(go));
+    LoadReqPacket load; std::memset(&load, 0, sizeof(load));
+    LoadNackPacket nack; std::memset(&nack, 0, sizeof(nack));
+    in.pushSaveReq(1, req);
+    in.pushSaveBegin(1, begin); in.pushSaveBegin(1, begin); // repeated BEGIN
+    in.pushSaveFile(1, file, "", 0);
+    in.pushSaveDone(1, done, 0);
+    in.pushSaveAck(1, ack);
+    in.pushLoadGo(1, go); in.pushLoadReq(1, load); in.pushLoadNack(1, nack);
+    in.pushConnect(1); in.pushLeave(1);
+    in.discardSaveLoadState(); in.discardSaveLoadState();
+    #define DISCONNECTED_EMPTY(name, type, drain) do { \
+        std::deque<type> out; in.drain(out); \
+        CHECK("disconnected save/load dropped: " name, out.empty()); } while (0)
+    DISCONNECTED_EMPTY("request", InboundSaveReq, drainSaveReqs);
+    DISCONNECTED_EMPTY("begin", InboundSaveBegin, drainSaveBegins);
+    DISCONNECTED_EMPTY("file", InboundSaveFile, drainSaveFiles);
+    DISCONNECTED_EMPTY("done", InboundSaveDone, drainSaveDones);
+    DISCONNECTED_EMPTY("ack", InboundSaveAck, drainSaveAcks);
+    DISCONNECTED_EMPTY("go", InboundLoadGo, drainLoadGos);
+    DISCONNECTED_EMPTY("load request", InboundLoadReq, drainLoadReqs);
+    DISCONNECTED_EMPTY("nack", InboundLoadNack, drainLoadNacks);
+    #undef DISCONNECTED_EMPTY
+    std::deque<u32> presence; in.drainConnects(presence);
+    CHECK("disconnect cleanup preserves connect edges", presence.size() == 1);
+    presence.clear(); in.drainLeaves(presence);
+    CHECK("disconnect cleanup preserves leave edges", presence.size() == 1);
+    in.pushSaveBegin(2, begin);
+    std::deque<InboundSaveBegin> fresh; in.drainSaveBegins(fresh);
+    CHECK("new connection can receive a fresh BEGIN", fresh.size() == 1 && fresh[0].ownerId == 2);
+}
+
 // ---- 12. Worker-teardown ordering (models NetLink::stop()) -----------------------
 // The NetLink::stop() fix: ENet teardown (enet_deinitialize + CloseHandle) must
 // happen ONLY after the net worker has fully exited - the worker owns transport
@@ -1787,6 +1827,7 @@ int main() {
     testTaskClear();
     testDeathRekey();
     testInboundLifecycle();
+    testSaveLoadDisconnect();
     testFlushWorldStateContract();
     testTeardownOrdering();
     std::printf("\nprototest: %d/%d checks passed%s\n",

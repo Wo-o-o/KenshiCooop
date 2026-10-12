@@ -97,6 +97,9 @@ bool tickSend(NetLink& net, u32 localId);
 // failed verify discards staging and leaves the previous save untouched.
 
 void onSaveBegin(const SaveBeginPacket& b);
+// Close an interrupted receiver without committing or deleting the previous save.
+// Staging is retained for diagnosis; a later valid BEGIN prepares its own transfer.
+void abortReceive();
 // path (not '\0'-terminated, pathLen bytes) + data are the wire payload.
 void onSaveFile(const SaveFileHeader& h, const char* path, const unsigned char* data);
 // Returns 1 = verified + committed, 0 = failed (staging discarded). Fills the
