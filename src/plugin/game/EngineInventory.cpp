@@ -77,7 +77,9 @@ unsigned int readInvItems(Inventory* inv, InvItemEntry* out, Item** outItems,
     if (outTruncated) *outTruncated = false;
     if (!inv || !out || maxOut == 0) return 0;
     unsigned int n = 0;
-    bool trunc = false;
+    // Without the section reader, worn gear and nested inventories are unknown,
+    // not empty. Such a capture must never authorize destructive reconciliation.
+    bool trunc = (g_getSectionsFn == 0);
     // Local mirror of the captured Item*s. The nested-container pass needs the parent objects
     // to reach into their private inventories, and most callers pass outItems = 0; every real
     // caller reads at most INV_ITEMS_MAX entries, so a fixed mirror covers them all.
@@ -93,6 +95,7 @@ unsigned int readInvItems(Inventory* inv, InvItemEntry* out, Item** outItems,
     if (g_getSectionsFn) {
         __try {
             lektor<InventorySection*>* secs = g_getSectionsFn(inv);
+            if (!secs) trunc = true;
             unsigned int ns = secs ? secs->size() : 0;
             for (unsigned int s = 0; s < ns; ++s) {
                 InventorySection* sec = (*secs)[s];
@@ -246,15 +249,19 @@ unsigned int readInvItems(Inventory* inv, InvItemEntry* out, Item** outItems,
                 b[sizeof(b) - 1] = '\0'; coop::logLine(b);
             }
         }
-        for (unsigned int p = 0; p < nTop && n < maxOut; ++p) {
+        // Keep inspecting captured parents after the output fills: only finding
+        // an omitted item proves truncation. Stopping at a section/parent boundary
+        // previously labelled an incomplete snapshot as complete.
+        for (unsigned int p = 0; p < nTop; ++p) {
             Item* parent = mine[p];
             if (!parent) continue;
             __try {
                 Inventory* sub = parent->getInventory();
                 if (!sub || sub == inv) continue; // not a container item
                 lektor<InventorySection*>* subSecs = g_getSectionsFn(sub);
+                if (!subSecs) { trunc = true; continue; }
                 unsigned int nss = subSecs ? subSecs->size() : 0;
-                for (unsigned int s = 0; s < nss && n < maxOut; ++s) {
+                for (unsigned int s = 0; s < nss; ++s) {
                     InventorySection* sec = (*subSecs)[s];
                     if (!sec) continue;
                     const Ogre::vector<InventorySection::SectionItem>::type& its = sec->items;
@@ -935,6 +942,15 @@ bool applyContainerContents(GameWorld* gw, const unsigned int cHand[5],
                             const InvItemEntry* items, unsigned int count,
                             bool truncated) {
     if (!gw) return false;
+    // Reject a malformed parent graph before any top-level mutation. In
+    // particular, orphaned children must not turn a populated bag into an
+    // apparently empty bag that we are then allowed to clear.
+    if (count > INV_ITEMS_MAX || (count && !items)) return false;
+    for (unsigned int i = 0; i < count; ++i) {
+        unsigned int parent = items[i].parentIdx;
+        if (parent && (parent > count || parent == i + 1 ||
+                       items[parent - 1].parentIdx != 0)) return false;
+    }
     RootObject* ro = resolveObjectByHand(cHand);
     if (!ro) return false;
     Inventory* inv = invOf(ro);
@@ -955,13 +971,13 @@ bool applyContainerContents(GameWorld* gw, const unsigned int cHand[5],
         top[nTop++] = items[i];
     }
     bool changed = applyToInventory(gw, inv, nTop ? top : 0, nTop, truncated);
-    if (nNested == 0) return changed;
 
     // Re-read AFTER the top-level pass: it may have created or moved the very bag we are about
     // to fill, and a bag identified from the stale read would be the wrong object (or gone).
     InvItemEntry cur[INV_ITEMS_MAX];
     Item* curItems[INV_ITEMS_MAX];
-    unsigned int ncur = readInvItems(inv, cur, curItems, INV_ITEMS_MAX, 0);
+    bool parentsTruncated = false;
+    unsigned int ncur = readInvItems(inv, cur, curItems, INV_ITEMS_MAX, &parentsTruncated);
 
     static int dbg = -1;
     if (dbg < 0) { const char* e = getenv("KENSHICOOP_INV_DUMP"); dbg = (e && e[0] == '1') ? 1 : 0; }
@@ -981,7 +997,10 @@ bool applyContainerContents(GameWorld* gw, const unsigned int cHand[5],
         unsigned int nk = 0;
         for (unsigned int i = 0; i < count && nk < INV_ITEMS_MAX; ++i)
             if (items[i].parentIdx == (unsigned char)(topSrcIdx[t] + 1)) kids[nk++] = items[i];
-        if (nk == 0) continue;
+        // A complete list with no children describes an EMPTY container. An
+        // incomplete list says nothing about omitted children. Non-container
+        // top-level items do not have nested contents to reconcile.
+        if (nk == 0 && (truncated || !isContainerItemType(top[t].itemType))) continue;
         claimed += nk;
 
         // Which copy of this template is it, in the SENDER's order? The sender's Nth bag of a
@@ -1005,6 +1024,12 @@ bool applyContainerContents(GameWorld* gw, const unsigned int cHand[5],
                 s = curItems[c]->getInventory();
             } __except (EXCEPTION_EXECUTE_HANDLER) { s = 0; }
             if (s && s != inv) cands[ncand++] = s;
+        }
+        // Carry order is not shared instance identity. Do not clear an arbitrary
+        // same-template bag when several local copies could be the empty parent.
+        if (nk == 0 && (ncand > 1 || parentsTruncated)) {
+            coop::logLine("[recon] NESTED-EMPTY-DEFER (ambiguous same-template containers)");
+            continue;
         }
         // Rank-aligned when we can, but NEVER a bag already reconciled this pass: our carry
         // order need not match the sender's, and reconciling one bag against two different
