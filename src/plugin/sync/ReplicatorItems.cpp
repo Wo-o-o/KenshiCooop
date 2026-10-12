@@ -12,6 +12,7 @@
 // PowerShell oracles (see resources/CODE_MAP.md, log-tag index).
 
 #include "ReplicatorUtil.h"
+#include "../../netproto/InventorySnapshot.h"
 
 namespace coop {
 
@@ -233,20 +234,22 @@ void Replicator::applyInventories(GameWorld* gw) {
         // wipe) - until the owner catches up (raw desired == local for the key) or the
         // grace deadline passes.
         std::vector<InvItemEntry> adj;
+        bool adjustedTruncated = it->second.truncated;
         std::map<Key, std::map<XKey, XferLatch> >::iterator lt = xferLatch_.find(k);
         if (lt != xferLatch_.end() && !lt->second.empty() &&
             engine::resolveObjectByHand(cHand) != 0) {
             unsigned long now = nowMs();
             // Local capture: totals for the catch-up check + entries for provenance.
             InvItemEntry loc[64];
-            unsigned int nl = engine::captureContainerContents(gw, cHand, loc, 64, 0);
-            adj.assign(items, items + n);
+            bool localTruncated = false;
+            unsigned int nl = engine::captureContainerContents(gw, cHand, loc, 64, 0, &localTruncated);
+            if (n) adj.assign(items, items + n);
             for (std::map<XKey, XferLatch>::iterator le = lt->second.begin();
                  le != lt->second.end(); ) {
                 const XKey& key = le->first;
                 int want = 0;
                 for (unsigned int i = 0; i < n; ++i)
-                    if (items[i].itemType == key.second &&
+                    if (items[i].parentIdx == 0 && items[i].itemType == key.second &&
                         strcmp(items[i].stringID, key.first.c_str()) == 0)
                         want += (items[i].quantity < 1) ? 1 : (int)items[i].quantity;
                 int local = 0;
@@ -254,10 +257,11 @@ void Replicator::applyInventories(GameWorld* gw) {
                     if (loc[i].itemType == key.second &&
                         strcmp(loc[i].stringID, key.first.c_str()) == 0)
                         local += (loc[i].quantity < 1) ? 1 : (int)loc[i].quantity;
-                if (want == local || now > le->second.deadlineMs) {
+                bool caughtUp = !it->second.truncated && !localTruncated && want == local;
+                if (caughtUp || (long)(now - le->second.deadlineMs) > 0) {
                     char b[200]; _snprintf(b, sizeof(b) - 1,
                         "[xfer] latch-%s hand=%u,%u,%u,%u,%u sid='%s' delta=%d",
-                        (want == local) ? "caught-up" : "expired",
+                        caughtUp ? "caught-up" : "expired",
                         k.t, k.c, k.cs, k.i, k.s, key.first.c_str(), le->second.delta);
                     b[sizeof(b) - 1] = '\0'; coop::logLine(b);
                     lt->second.erase(le++);
@@ -270,6 +274,7 @@ void Replicator::applyInventories(GameWorld* gw) {
                     int strip = -d;
                     for (int pass = 0; pass < 2 && strip > 0; ++pass) {
                         for (unsigned int i = 0; i < adj.size() && strip > 0; ++i) {
+                            if (adj[i].parentIdx != 0) continue;
                             if (adj[i].itemType != key.second) continue;
                             if ((int)adj[i].equipped != pass) continue;
                             if (strcmp(adj[i].stringID, key.first.c_str()) != 0) continue;
@@ -279,8 +284,8 @@ void Replicator::applyInventories(GameWorld* gw) {
                             strip -= cut;
                         }
                     }
-                    for (unsigned int i = 0; i < adj.size(); )
-                        if (adj[i].quantity == 0) adj.erase(adj.begin() + i); else ++i;
+                    // Keep original indices until every latch has been applied.
+                    // compactInventorySnapshot remaps surviving parent references.
                 } else if (d > 0) {
                     // We GAVE units: keep them in the desired list so the reconcile
                     // doesn't destroy them. Copy the real local entry (provenance).
@@ -297,17 +302,25 @@ void Replicator::applyInventories(GameWorld* gw) {
                         strncpy(e.stringID, key.first.c_str(), sizeof(e.stringID) - 1);
                         e.itemType = key.second;
                     }
-                    e.equipped = 0; e.slot = 0; e.section = 0;
+                    e.equipped = 0; e.slot = 0; e.section = 0; e.parentIdx = 0;
                     e.quantity = (u16)d;
                     adj.push_back(e);
+                    // This synthetic parent has no authoritative child list. In
+                    // particular it must not empty the REAL transferred backpack.
+                    if (engine::isContainerItemType(e.itemType)) adjustedTruncated = true;
                 }
                 ++le;
             }
             if (lt->second.empty()) xferLatch_.erase(lt);
+            if (!compactInventorySnapshot(adj) || adj.size() > INV_ITEMS_MAX) {
+                it->second.dirty = true; // wait for the owner's next safe snapshot
+                coop::logLine("[inv] ADJUST-DEFER (invalid or oversized parent graph)");
+                continue;
+            }
             items = adj.empty() ? 0 : &adj[0];
             n = (unsigned int)adj.size();
         }
-        engine::applyContainerContents(gw, cHand, items, n, it->second.truncated);
+        engine::applyContainerContents(gw, cHand, items, n, adjustedTruncated);
         // Keep the transfer detector blind to the reconcile we just performed.
         xferRebase(gw, k);
         char b[160];
@@ -315,7 +328,7 @@ void Replicator::applyInventories(GameWorld* gw) {
             "[inv] APPLY hand=%u,%u,%u,%u,%u items=%u",
             k.t, k.c, k.cs, k.i, k.s, n);
         b[sizeof(b) - 1] = '\0'; coop::logLine(b);
-        if (it->second.truncated) {
+        if (adjustedTruncated) {
             char t[160]; _snprintf(t, sizeof(t) - 1,
                 "[inv] APPLY-TRUNCATED hand=%u,%u,%u,%u,%u items=%u (additive-only; no deletes)",
                 k.t, k.c, k.cs, k.i, k.s, n);
@@ -1833,15 +1846,17 @@ void Replicator::applyXferAcks(GameWorld* gw, Inbound& in, u32 localId) {
     for (std::deque<InboundInvXferAck>::iterator it = got.begin(); it != got.end(); ++it) {
         const InvXferAckPacket& a = it->pkt;
         if (a.xferOwnerId != localId) continue;      // not answering us (relay safety)
-        std::map<u32, XferOut>::iterator o = xferOut_.find(a.xferId);
+        // Packed wire fields may be unaligned; map::find takes a reference.
+        const u32 ackId = a.xferId;
+        std::map<u32, XferOut>::iterator o = xferOut_.find(ackId);
         if (o == xferOut_.end()) continue;           // already settled or swept
         const XferOut& x = o->second;
-        // Back out this intent's latch contribution, and do it for EVERY
-        // verdict - the latch exists only to bridge the window where the
-        // receiver had not answered yet, and the answer has arrived:
-        //   accepted - the receiver's snapshots now carry the move, so holding
-        //              the latch for the rest of the grace only delays
-        //              convergence
+        // An ACCEPT confirms the mutation, not receipt of its resulting
+        // snapshot. Inventory settle and the net queue can leave an older row
+        // in invRecv_ when this ACK is drained. Keep accepted contributions
+        // until applyInventories observes catch-up (or the existing grace
+        // expires), so that row cannot mint the item back into its source.
+        // Back out rejected/partial contributions for authoritative rollback:
         //   partial  - the units the receiver refused are units its snapshots
         //              still show where they were, and we want to converge on
         //              that, not defend our optimistic copy of them
@@ -1850,8 +1865,11 @@ void Replicator::applyXferAcks(GameWorld* gw, Inbound& in, u32 localId) {
         //              the owner sees it; that is the rollback, through the
         //              reconcile path rather than a second mutation that could
         //              itself dupe.
-        if (x.srcPeer) releaseXferLatch(x.src, x.key, +x.qty);
-        if (x.dstPeer) releaseXferLatch(x.dst, x.key, -x.qty);
+        bool accepted = a.verdict == XFER_ACK_ACCEPT && (int)a.applied >= x.qty;
+        if (!accepted) {
+            if (x.srcPeer) releaseXferLatch(x.src, x.key, +x.qty);
+            if (x.dstPeer) releaseXferLatch(x.dst, x.key, -x.qty);
+        }
         const char* vn = (a.verdict == XFER_ACK_ACCEPT)  ? "accept"
                        : (a.verdict == XFER_ACK_PARTIAL) ? "partial" : "reject";
         char b[224]; _snprintf(b, sizeof(b) - 1,

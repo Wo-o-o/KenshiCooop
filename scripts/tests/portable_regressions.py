@@ -37,21 +37,32 @@ def main():
     build = ROOT / "build" / "portable-regressions"
     build.mkdir(parents=True, exist_ok=True)
     source = (ROOT / "src/plugin/game/EngineInventory.cpp").read_text()
-    names = ["unsigned int readInvItems(", "int removeByKey(",
+    names = ["unsigned int readInvItems(", "unsigned int captureContainerContents(", "int removeByKey(",
              "static bool applyToInventory(", "bool applyContainerContents("]
     extracted = "\n".join(function(source, name) for name in names)
     extracted = extracted.replace("__try", "try").replace(
         "__except (EXCEPTION_EXECUTE_HANDLER)", "catch (...)")
+    extracted = extracted.replace("bool applyContainerContents(", "bool applyContainerContentsImpl(")
     (build / "Inventory-under-test.inc").write_text(extracted)
+    repl = (ROOT / "src/plugin/sync/ReplicatorItems.cpp").read_text()
+    (build / "Replicator-under-test.inc").write_text("\n".join(function(repl, name) for name in [
+        "void Replicator::applyInventories(", "void Replicator::applyXferAcks(",
+        "void Replicator::releaseXferLatch("]))
     compiler = os.environ.get("CXX", "g++")
     exe = build / "inventory-regressions"
     flags = ["-std=c++03", "-O1", "-g", "-D__int64=long long"]
     if args.sanitize:
-        flags += ["-fsanitize=address,undefined", "-fno-omit-frame-pointer"]
+        flags += ["-fsanitize=address,undefined", "-fno-sanitize-recover=all", "-fno-omit-frame-pointer"]
     subprocess.run([compiler, *flags, "-I" + str(ROOT), "-I" + str(build),
                     str(ROOT / "scripts/tests/portable/InventoryRegression.cpp"),
                     "-o", str(exe)], check=True)
     subprocess.run([str(exe), *(["capture"] if args.capture_only else [])], check=True)
+    if not args.capture_only:
+        exe = build / "snapshot-regressions"
+        subprocess.run([compiler, *flags, "-I" + str(ROOT),
+                        str(ROOT / "scripts/tests/portable/SnapshotRegression.cpp"),
+                        "-o", str(exe)], check=True)
+        subprocess.run([str(exe)], check=True)
 
 
 if __name__ == "__main__":

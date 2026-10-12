@@ -1,7 +1,17 @@
 #include "InventoryMock.h"
 namespace coop { namespace engine {
 #include "Inventory-under-test.inc"
+static std::vector<InvItemEntry> lastApplied;
+static bool lastTruncated;
+bool applyContainerContents(GameWorld* gw, const unsigned int hand[5],
+                            const InvItemEntry* items, unsigned int count, bool truncated) {
+    lastApplied.clear();
+    if (count) lastApplied.assign(items, items + count);
+    lastTruncated = truncated;
+    return applyContainerContentsImpl(gw, hand, items, count, truncated);
+}
 } }
+#include "ReplicatorInventoryMock.h"
 using namespace coop;
 using namespace coop::engine;
 static int total = 0, failures = 0;
@@ -154,9 +164,54 @@ static void emptyTests() {
         CHECK("A01 invalid parent graph performs no destructive writes", f.bag.removed == 0 && f.top.removed == 0);
     }
 }
+static void adjustmentTests() {
+    {
+        Fixture f; f.add(f.bag, &f.first, 7);
+        Replicator repl; Replicator::Key k;
+        InvItemEntry bagEntry; readInvItems(&f.top, &bagEntry, 0, 1, 0, false);
+        InvItemEntry food; std::memset(&food, 0, sizeof(food)); std::strcpy(food.stringID, "food");
+        food.itemType = 2; food.quantity = 1;
+        repl.invRecv_[k].items.push_back(food); repl.invRecv_[k].items.push_back(bagEntry);
+        food.quantity = 7; food.parentIdx = 2; repl.invRecv_[k].items.push_back(food);
+        repl.xferLatch_[k][Replicator::XKey("food", 2)].delta = -1;
+        GameWorld world; repl.applyInventories(&world);
+        CHECK("A03 actual latch path remaps child", lastApplied.size() == 2 && lastApplied[1].parentIdx == 1);
+        CHECK("A03 latch removes top units only, not nested same template", lastApplied.size() == 2 && lastApplied[1].quantity == 7 && f.bag.removed == 0);
+    }
+    {
+        Fixture f; f.add(f.bag, &f.first, 7);
+        Replicator repl; Replicator::Key k; repl.invRecv_[k].dirty = true;
+        repl.xferLatch_[k][Replicator::XKey("bag", 46)].delta = 1;
+        GameWorld world; repl.applyInventories(&world);
+        CHECK("A03 synthetic latch backpack has unknown children", lastTruncated);
+        CHECK("A03 synthetic latch cannot empty real transferred bag", f.bag.removed == 0 && f.bag._allItems[0]->quantity == 7);
+    }
+}
+static void ackTests() {
+    Fixture f; Replicator repl; Replicator::Key k;
+    Replicator::XKey key("food", 2);
+    Replicator::XferOut sent; sent.src = k; sent.key = key;
+    repl.xferOut_[5] = sent; repl.xferLatch_[k][key].delta = -1;
+    Inbound in; InboundInvXferAck ack; std::memset(&ack.pkt, 0, sizeof(ack.pkt));
+    ack.pkt.xferOwnerId = 1; ack.pkt.xferId = 5; ack.pkt.applied = 1; ack.pkt.verdict = XFER_ACK_ACCEPT;
+    in.acks.push_back(ack); GameWorld world;
+    mockNow = 3000; repl.applyXferAcks(&world, in, 1);
+    CHECK("A07 ACCEPT retains protection against delayed old snapshot", repl.xferLatch_[k][key].delta == -1);
+    CHECK("A07 ACCEPT settles pending ack record", repl.xferOut_.empty());
+    in.acks.push_back(ack); repl.applyXferAcks(&world, in, 1);
+    CHECK("A07 duplicated ACK does not release protection", repl.xferLatch_[k][key].delta == -1);
+    // Empty authoritative source snapshot catches up and releases the retained latch.
+    repl.invRecv_[k].dirty = true; repl.applyInventories(&world);
+    CHECK("A07 current owner snapshot releases latch", repl.xferLatch_.empty());
+    repl.xferOut_[6] = sent; repl.xferLatch_[k][key].delta = -1;
+    ack.pkt.xferId = 6; ack.pkt.verdict = XFER_ACK_REJECT; ack.pkt.applied = 0;
+    in.acks.push_back(ack); repl.applyXferAcks(&world, in, 1);
+    CHECK("A07 rejection still releases optimistic contribution", repl.xferLatch_.empty());
+    mockNow = 1000;
+}
 int main(int argc, char** argv) {
     captureTests();
-    if (argc < 2 || std::strcmp(argv[1], "capture") != 0) emptyTests();
+    if (argc < 2 || std::strcmp(argv[1], "capture") != 0) { emptyTests(); adjustmentTests(); ackTests(); }
     std::printf("inventory regressions: %d/%d PASS\n", total - failures, total);
     return failures ? 1 : 0;
 }

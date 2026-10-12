@@ -74,6 +74,8 @@ static RootObject* resolveObjectByHand(const unsigned int*) { return &root; }
 static Inventory* invOf(RootObject* ro) { return ro->inv; }
 unsigned int readInvItems(Inventory*, InvItemEntry*, Item**, unsigned int,
                          bool* = 0, bool = false);
+unsigned int captureContainerContents(GameWorld*, const unsigned int*, InvItemEntry*,
+                                      unsigned int, unsigned int*, bool* = 0, bool = false);
 // Movement/factory paths are deliberately outside these tests. Removal below is real
 // removeByKey + applyToInventory, with only Inventory's engine operation simulated.
 static int equipExisting(Inventory*, Item*) { return 0; }

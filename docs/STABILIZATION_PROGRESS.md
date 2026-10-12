@@ -35,8 +35,9 @@ Community evidence: [#63](https://github.com/nhoral/KenshiCoop/issues/63) and [#
 | --- | --- | --- |
 | A02 | Implemented, Linux control-flow verified | Continue enumeration past capacity to mark actual omitted children; unavailable section reads are incomplete |
 | A01 | Implemented with safety limits | Clear uniquely resolved empty bag only from complete valid snapshots; incomplete local enumeration or ambiguous same-template bags cannot authorize clearing |
-| A03 | Pending | Remap parentIdx after latch adjustments; synthetic bag entries must not authorize empty clearing |
-| A06/A07 | Pending | Nested transfer detection/relocation and ACK/snapshot causal ordering |
+| A03 | Implemented, Linux verified | Compact adjusted parent graph atomically; preserve nested units; synthetic bag entries are incomplete |
+| A06 | Pending | Nested transfer detection/relocation and distinguishing missing vs refused |
+| A07 | Partially fixed | ACCEPT keeps latch until matching snapshot; existing grace expiry and partial rollback still need work |
 | A05/A09 | Pending | Deferred drops, consumed world ids and claim retry |
 | A11/A04/A12 | Pending | Distinguish read/apply outcomes, translate proxy hands, fence old world data |
 | A13/A14/A15 | Pending | Validate on-disk transfer, paths, ordering and receiver lifecycle |
@@ -49,7 +50,7 @@ Community evidence: [#63](https://github.com/nhoral/KenshiCoop/issues/63) and [#
 - A02 red baseline: 7/13 passing; failed top/section/parent boundaries, destructive incomplete reconcile, unavailable reads. After fix: 13/13.
 - A01 red baseline after A02: 16/19 passing; empty nested inventories remained stale. Initial fix passed 19/19.
 - Added safety regressions found another failure with incomplete local parent enumeration. Final inventory checks: **22/22 PASS**, sanitizers clean.
-- Cases include real 64-entry capture limits, exact-full complete output, top-only reader semantics, read fault, incomplete desired/local snapshots, idempotent empty replay, two distinct bags, ambiguous same-template bags and invalid parent graph.
+- Current inventory checks: **31/31 PASS**; snapshot graph policy: **10/10 PASS**. Cases additionally exercise actual `applyInventories`, synthetic latch parents, top/nested identical templates, delayed/duplicate ACCEPT and rejected ACK. UBSan found an unaligned packed ACK field passed by reference into `map::find`; copying to an aligned local fixed it. Sanitizer runs now fail immediately on errors instead of recovering.
 - Initial audit's compatible prototest subset: 456/456; PowerShell contract fixtures: 32/32. These must be rerun after the final session changes; old results do not validate new code.
 
 Windows v100 DLL/prototest and two-player Kenshi/Steam tests have **not run**.
