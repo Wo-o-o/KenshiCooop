@@ -1,0 +1,76 @@
+name: Stabilization checks
+on:
+  push:
+    branches: ['dev/**']
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      run_v100:
+        description: 'Use an already provisioned trusted Windows x64 v100 runner'
+        type: boolean
+        default: false
+permissions:
+  contents: read
+jobs:
+  portable:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Regression checks with sanitizers and existing pure prototest
+        run: python3 scripts/tests/portable_regressions.py --sanitize --existing-prototest
+      - name: RE_Kenshi source integration contracts
+        run: python3 scripts/tests/check_re_integration.py
+      - name: Existing harness contracts
+        shell: pwsh
+        run: ./scripts/tests/Contract.Tests.ps1
+  windows-v100:
+    # Never execute untrusted PR code on a machine with a real Kenshi installation.
+    if: github.event_name == 'workflow_dispatch' && inputs.run_v100
+    runs-on: [self-hosted, Windows, X64, kenshi-v100]
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          # Keep the runner's already approved ignored dependency bundle.
+          clean: false
+      - name: Require existing legacy toolchain and dependency bundle
+        shell: powershell
+        run: |
+          $compiler = 'C:\Program Files (x86)\Microsoft Visual Studio 10.0\VC\bin\amd64\cl.exe'
+          if (!(Test-Path $compiler)) { throw 'Genuine v100 x64 compiler is required.' }
+          if (![System.Diagnostics.FileVersionInfo]::GetVersionInfo($compiler).FileVersion.StartsWith('16.')) {
+            throw 'Modern MSVC must not substitute for v100.'
+          }
+          foreach ($path in @('third_party/KenshiLib_deps/KenshiLib/Include/core/Functions.h',
+                               'third_party/KenshiLib_deps/KenshiLib/Libraries/kenshilib.lib',
+                               'third_party/enet/enet/include/enet/enet.h')) {
+            if (!(Test-Path $path)) { throw "Provision the approved matching dependency bundle first: $path" }
+          }
+      - name: Build and run genuine v100 protocol tests
+        shell: cmd
+        run: |
+          call scripts\build_prototest.cmd
+          if errorlevel 1 exit /b 1
+          dist\prototest.exe
+          if errorlevel 1 exit /b 1
+          call scripts\build_snapshot_tests.cmd
+          if errorlevel 1 exit /b 1
+          call scripts\build_tunneltest.cmd
+          if errorlevel 1 exit /b 1
+          dist\tunneltest.exe
+      - name: Build genuine v100 plugin configurations (no deployment)
+        shell: cmd
+        run: |
+          call scripts\build_plugin.cmd Harness
+          if errorlevel 1 exit /b 1
+          call scripts\build_plugin.cmd Release
+          if errorlevel 1 exit /b 1
+      - name: Inspect integration ABI without loading the DLL
+        shell: powershell
+        run: |
+          $dumpbin = 'C:\Program Files (x86)\Microsoft Visual Studio 10.0\VC\bin\amd64\dumpbin.exe'
+          $dll = 'src/plugin/x64/Release/KenshiCoop.dll'
+          $exports = & $dumpbin /exports $dll
+          if ($LASTEXITCODE -ne 0 -or !($exports -match '\?startPlugin@@YAXXZ')) { throw 'Required RE_Kenshi export missing.' }
+          $imports = & $dumpbin /dependents $dll
+          if ($LASTEXITCODE -ne 0 -or !($imports -match 'KenshiLib.dll')) { throw 'Required KenshiLib dependency missing.' }
+          Write-Host 'Build and PE contracts only. Combined Kenshi + RE_Kenshi gameplay validation is still required.'

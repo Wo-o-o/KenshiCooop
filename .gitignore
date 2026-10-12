@@ -76,5 +76,8 @@ resources/
 # Stray shell artifact
 nul
 
+# Portable regression runner imports (generated local Python cache)
+__pycache__/
+
 # Local-only maintainer notes (release process, etc.) - not for the public repo
 *.local.md
