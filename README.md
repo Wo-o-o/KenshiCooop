@@ -1,6 +1,35 @@
-# KenshiCoop
+# KenshiCoop — AI-Assisted Stabilization
 
-Setup + Demo: [https://www.youtube.com/watch?v=OqwVRRZEYGM](https://www.youtube.com/watch?v=OqwVRRZEYGM)
+An experimental, AI-assisted stabilization fork of
+[nhoral's original KenshiCoop](https://github.com/nhoral/KenshiCoop), based on
+v0.51. This is a separate development effort, not the original mod or an
+official upstream release. AI assistance supports investigation, code changes,
+tests and documentation; it does not establish correctness or gameplay safety.
+
+Our goals are to prevent item duplication and inventory loss, reduce multiplayer
+desynchronization, and improve save transfer reliability. Work is tracked on
+`dev/stabilize-v0.51`; these are goals, not claims that every defect is fixed.
+
+> **Status: experimental source changes, not ready for public gameplay.**
+> Automated checks have passed: the recorded run reports 585/585 portable logic
+> checks, 7/7 RE source integration contracts and 32/32 PowerShell contract checks.
+> **The modified DLL has not yet been built with v100 or validated in real
+> gameplay.** These results do not validate the Windows ABI, live networking or
+> two-player gameplay. Known defects and incomplete fixes remain.
+
+See the [stabilization progress and test evidence](docs/STABILIZATION_PROGRESS.md)
+and [RE_Kenshi integration requirements](docs/RE_KENSHI_INTEGRATION.md) for the
+scope, limitations and pending validation. Repository presentation text is
+recorded in [repository identity](docs/REPOSITORY_IDENTITY.md).
+
+**RE_Kenshi and KenshiLib are required.** KenshiCoop is a plugin for that runtime,
+not a standalone multiplayer loader. Preserve the matching KenshiLib/RVA bundle;
+the documented target is Kenshi 1.0.65 Steam x64, with a genuine VC++ 2010
+(v100) x64 plugin build.
+
+Original project setup + demo:
+[YouTube](https://www.youtube.com/watch?v=OqwVRRZEYGM) (upstream behavior, not a
+demonstration of this fork's stabilization changes).
 
 Experimental **co-op multiplayer for [Kenshi](https://lofigames.com/)**, built as an
 [RE_Kenshi](https://github.com/BFrizzleFoShizzle/RE_Kenshi) /
@@ -14,9 +43,7 @@ one shared money pool, game speed, and more - and saves are coordinated: any sav
 either player makes becomes one shared save, streamed to both machines
 automatically.
 
-> **Status: work in progress.** This is a hobby project under active
-> development. Expect rough edges, desyncs, and crashes. Two players is the
-> current design target.
+Two players is the current design target. Expect rough edges, desyncs and crashes.
 
 ## How it works
 
@@ -40,7 +67,12 @@ docs/             Build guide, engine/API reference, replication pitfalls
 third_party/      ENet patches, VC10 compat shim (deps are fetched, not committed)
 ```
 
-## Try it (play with a friend)
+## Original mod installation and play instructions
+
+The following upstream instructions are retained for reference. The upstream
+release and bundled kit are baseline artifacts, not a tested build of this
+stabilization branch. Following these instructions does not install the source
+fixes described above. No gameplay-ready stabilization release is available.
 
 Two players, two machines. You configure the session **inside the game** with
 an in-game panel (press **F2**) - you swap Steam IDs by clipboard right in the
@@ -51,7 +83,9 @@ panel, so there's no config file to edit and no launcher scripts to run. (A tiny
 
 1. **Kenshi 1.0.65 (Steam)**.
 2. **[RE_Kenshi 0.3.1+](https://www.nexusmods.com/kenshi/mods/847)** installed
-   (free Nexus mod - it loads the co-op plugin into the game).
+   with its matching **KenshiLib and RVA files** (free Nexus mod - it loads the
+   co-op plugin into the game). See the integration document for compatibility
+   limits; this is not a claim that every later version has been tested.
 3. **Steam running and online** on both machines. That's the whole network
    setup: the connection is Steam P2P, so there's no port forwarding, no
    router configuration, and no IP addresses. (A direct-UDP mode is also
@@ -123,8 +157,9 @@ is needed after an edit.
   (or starts a new game); when the join connects from the menu, the host's world
   is streamed over automatically. Already having an identical copy on disk just
   skips the transfer.
-- **Saving just works.** Any save either player makes during a session becomes
-  one shared save on both machines, streamed to the other side automatically.
+- **Coordinated saving.** The intended behavior is that a save made by either
+  player becomes one shared save on both machines, streamed automatically.
+  Save transfer failures remain an active stabilization target.
   To resume next time, the host loads that save and goes online, and the join
   can reconnect straight from the main menu again.
 
@@ -173,11 +208,19 @@ scenario, and produces a numeric PASS/FAIL verdict from the two logs.
 
 ## Credits
 
+- [nhoral](https://github.com/nhoral) - creator of the
+  [original KenshiCoop](https://github.com/nhoral/KenshiCoop), the foundation of
+  this fork
 - [BFrizzleFoShizzle](https://github.com/BFrizzleFoShizzle) - RE_Kenshi and
   KenshiLib, which make plugins like this possible
 - [lsalzman/enet](https://github.com/lsalzman/enet) - UDP networking library
 - [zeroit789](https://github.com/zeroit789) - the "Multiplayer (Wanderer x2)"
   co-op game start ([#15](https://github.com/nhoral/KenshiCoop/pull/15))
+- [jayceslesar](https://github.com/jayceslesar) - the native-item ownership and
+  scan-baseline work in [PR69](https://github.com/nhoral/KenshiCoop/pull/69),
+  selectively ported and reviewed for this branch
+- Upstream contributors and community bug reporters - reports and prior fixes
+  informing this work, linked in the stabilization progress document
 - Lo-Fi Games - Kenshi
 
 ## License
